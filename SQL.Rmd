@@ -1,0 +1,281 @@
+---
+title: "Assignment 2"
+author: Hussam Taj
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, eval = FALSE)
+```
+
+## Instructions
+
+You're asked to write SQL queries for the following tasks and submit them to the **Blackboard** by 11:59 pm on October 10, 2019. You should use the database `dataset_1.db` to complete this assignment.
+
+## Questions
+
+### Part 1 - Create a table
+
+Suppose that STAT 474 has been repurposed as a rain measurement corps to assist with the Departmentof Interior that collected the data about precipitation. Create a table (i.e., the schema) for storing the staff assignments. Table requirements:
+
+- Station ID where the rain data is collected.
+- Everyone in the class will be holding a cup in the rain for a specific several-hour shift at a specific station; this assignment will remain the same every day. Need to record the starting and ending hours.
+- Each person will have one off-day per week.
+- Each person’s cup might be of a different size, measured as a float value.
+- The Dept. of Interior data servers can’t handle the full dataset we would generate, and require a random subsample- so some people will be randomly chosen to stand in the rain without a cup. These assignments need to be recorded somehow in the table too.
+
+- Some people in the class have [Welsh names](https://www.youtube.com/watch?v=fHxO0UdpoxM)
+
+```{r}
+library(DBI)
+library(RSQLite)
+con <- dbConnect(SQLite(), dbname="dataset_1.db")
+dbGetQuery(con, '
+CREATE TABLE staff_assignment(
+       studentID    INT PRIMARY KEY, 
+       sname        VARCHAR (20), -- name of the students
+       start_hour   INT,                  
+       end_hour     INT,
+       day_off      INT, 
+       hour         INT,
+       cup_size     FLOAT,
+       state_code   INT, 
+       stateID      INT,
+       without_cup  INT   
+      
+);
+           ')
+```
+
+
+### Part 2 - Writing queries about bagels
+
+#### Story:
+
+- *eBagel* is a ground-breaking new tech startup in the red-hot NoSQL-based bagel enterprise space
+- *eBagel* has just received $100M in venture capital funding. However, their sales numbers are dropping off, and you have been brought in to analyze the data and figure out what's going wrong
+
+Let's begin with loading those packages into the current session and connect with the database management system
+
+```{r, message=FALSE}
+library(DBI)
+library(RSQLite)
+con <- dbConnect(SQLite(), dbname="dataset_1.db")
+```
+
+In the database, we have the following tables:
+
+```
+Franchise(name TEXT, db_type TEXT)
+Store(franchise TEXT, location TEXT)
+Bagel(name TEXT, price MONEY, made_by TEXT)
+Purchase(bagel_name TEXT, franchise TEXT, date INT, quantity INT, purchaser_age INT)
+```
+
+where `purchase.bagel_name` references `bagel.name` and `purchase.franchise` references `bagel.made_by`.
+
+#### Union
+
+First, let's find franchises that have locations in PA **or** NYC to see who the potential competition is:
+
+```{r}
+dbGetQuery(con,'
+SELECT franchise 
+FROM store 
+WHERE location = \'NYC\'
+UNION
+SELECT franchise 
+FROM store 
+WHERE location = \'PA\';
+')
+```
+
+*Question 1:* Replace the `...` by the correct keyword.
+
+#### Intersect: Subtle problem...
+
+eBagel's CEO is curious to know more about the back-end technologies of Bagel companies that have successfully spread across multiple locations. Let's try to use an `INTERSECT` operator to find the database types of franchises which have stores in PA **AND** NYC:
+
+```{r}
+dbGetQuery(con,'
+SELECT f.db_type
+FROM franchise f, store s 
+WHERE f.name = s.franchise AND s.location = \'NYC\'
+INTERSECT
+SELECT f.db_type
+FROM franchise f, store s 
+WHERE f.name = s.franchise AND s.location = \'PA\'
+')
+```
+
+*What happened here?*
+
+If we look at the data, we should only have gotten "MySQL" as a result:
+
+```{r}
+dbGetQuery(con,'
+SELECT f.name, s.location, f.db_type
+FROM franchise f, store s 
+WHERE f.name = s.franchise;
+')
+```
+
+*Question 2:* Explain the queries' result by breaking the query operation down. Write queries to obtain the `db_type` of stores from 'NYC' and then from 'PA' sequentially. Describe the unexpected output of the query.
+
+Answer: The intersect operation ran over the returned attributes rather than the constraints which returned NoSQL in the output. The first step in query operation should be looking for the dbtype and reference franchise and store names for that and the condition from the first query should return Bob's bagel and Bagel corp and the second query should return ebagel & Bagel corp and the intersect of them should return Bagel corp and its db_type is MySQL.
+
+#### Nested queries
+
+One solution to the above problem is to use *nested queries*. 
+
+*Question 3:* Write a nested query to find the common database system type `db_type`, used by stored from both 'NYC' and 'PA'
+
+```{r}
+# Your query goes here.
+dbGetQuery(con,'
+SELECT DISTINCT f.db_type
+FROM franchise f
+WHERE f.name IN (
+  SELECT s.franchise FROM store s WHERE s.location= \'NYC\')
+  AND f.name IN (
+    SELECT s.franchise FROM store s WHERE s.location = \'PA\'
+  )
+')
+```
+
+Another nested queries example: eBagel's CEO wants to know what databases support bagel companies that appeal to to the crucial twenty-something demographic:
+
+```{r}
+dbGetQuery(con,'
+SELECT f.db_type
+FROM franchise f
+WHERE f.name IN (
+    SELECT b.made_by
+    FROM bagel b, purchase p
+    WHERE b.name = p.bagel_name 
+      AND p.purchaser_age >= 20 AND p.purchaser_age < 30);
+')
+```
+
+*Question 4:* Nested queries are powerful and convenient! Could we accomplish the above without them however? 
+
+*Hint:* Beware of duplicates!
+
+```{r}
+# Your query goes here.
+dbGetQuery(con,'
+SELECT DISTINCT f.db_type
+FROM franchise f, bagel b, purchase p
+WHERE b.name = p.bagel_name 
+AND f.name = b.made_by
+AND p.purchaser_age >= 20 AND p.purchaser_age < 30
+')
+```
+
+In class, we have seen the use the following over the results of nested subqueries:
+
+- `ALL`
+- `ANY`
+- `EXISTS`
+
+Unfortunately, `ALL` and `ANY` are not supported in **SQLite** (*the DBMS we're using here*). However, we can use `EXISTS` to answer a wide-range of questions. 
+
+*Question 5:* Write a query to answer the following question: does eBagel have any products which are cheaper than *any* of its competitors'? 
+
+*Note:* you can use `<>` in a condition to determine whether two quantities are different.
+
+```{r}
+# Your query goes here.
+dbGetQuery(con,'
+SELECT b.name, b.price
+FROM bagel b
+WHERE b.made_by = \'eBagel\'
+AND EXISTS (SELECT name FROM bagel WHERE made_by <> \'eBagel\'AND price > b.price);
+')
+```
+
+#### Aggregation
+
+SQL (and also SQLite) supports several aggregation operations: `SUM`, `COUNT`, `AVG`, `MIN`, and `MAX`. Except `COUNT`, all aggregation operators apply to a single attribute only.
+
+Here are some simple examples:
+
+```{r}
+dbGetQuery(con,'
+SELECT AVG(price) 
+FROM bagel 
+WHERE made_by = \'eBagel\';
+')
+```
+
+Note that you can define the attribute labels of the output schema, which is convenient for aggregation operations:
+
+```{r}
+dbGetQuery(con,'
+SELECT COUNT(*) AS "Number of Stores in PA" 
+FROM store WHERE location = \'PA\';
+')
+```
+
+*Question 6:* What if we want to know how many total locations there are of relevance in the Bagel 2.0 space (i.e., everything in the current database)?
+
+```{r}
+# Your query goes here.
+dbGetQuery(con,'
+SELECT COUNT (DISTINCT location) FROM store
+')
+```
+
+Next, you've purchased some industry sales data, and want to get a sense of how big the bagel space is exactly. How can we do this easily and efficiently, all in SQL?
+
+```{r}
+dbGetQuery(con,'
+SELECT SUM(b.price * p.quantity) AS net_sales
+FROM bagel b, purchase p
+WHERE b.name = p.bagel_name;
+')
+```
+
+*Question 7:* That's a huge market opportunity! Now, eBagel's CEO is quite excited, and wants to see more detail, such as how the distribution across companies breaks down. *Hint:* Use both grouping and aggregate.
+
+```{r}
+# Your query goes here.
+dbGetQuery(con,'
+SELECT b.made_by, SUM(b.price * p.quantity) AS revenue
+    FROM bagel b, purchase p
+    WHERE b.made_by = p.franchise AND b.name = p.bagel_name
+    GROUP BY b.made_by;
+')
+```
+
+*Question 8:* Finally, to cap off the analysis, you want to see the distribution of revenue by product. However, in order to paint a more effective high-level picture, you only want to see best-sellers, which you define as products with more that a dozen total sales.
+
+
+A massive amount of user interviewing has suggested that something called "shmear" (or schmear) is of critical importance to market success. You decide to look for competitors that have some shmear on the menu. 
+
+*Question 9:* Write a query to find such competitors.
+
+```{r}
+# Your query goes here.
+dbGetQuery(con,'
+SELECT DISTINCT f.name AS competitor
+FROM franchise f, Bagel b
+WHERE f.name = b.made_by
+AND f.name <>"eBagel"
+AND lower (b.name) LIKE "%shmear%" OR "%schmear%"
+')
+```
+
+*Question 10:* Can you find out if there were any purchases of products not on one of the company's official lists (i.e. the bagel table), using a single SQL query?
+
+```{r}
+# Your query goes here.
+dbGetQuery(con,'
+SELECT bagel_name
+FROM purchase
+WHERE bagel_name NOT IN(
+SELECT name
+FROM Bagel
+)
+')
+```
